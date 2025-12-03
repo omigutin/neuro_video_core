@@ -6,6 +6,12 @@ from src.neuro_video_core.core.video_core import VideoCore
 from src.neuro_video_core.settings import VideoCoreConfig
 from src.neuro_video_core.decoders.decoder_type import DecoderType
 
+# Новый импорт
+from tools.timer import TimerManager
+
+# Глобальный таймер для всех тестов
+TM = TimerManager()
+
 
 # ============================================================
 #                    ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
@@ -26,112 +32,99 @@ def _show_frame(window: str, frame, delay_ms: int = 1):
 
 
 def _print_seek_info(requested_frame: int, decoder_frame: int):
-    """Вывод информации о точности перехода."""
-    print(
-        f"Requested: {requested_frame:6d} | "
-        f"Decoder:  {decoder_frame:6d}"
-    )
+    print(f"Requested: {requested_frame:6d} | Decoder:  {decoder_frame:6d}")
 
 
 # ============================================================
-#               СЦЕНАРИИ ТЕСТИРОВАНИЯ MVP
+#                   ФУНКЦИИ ТЕСТОВ (с таймерами)
 # ============================================================
 
-def test_sync_read(core: VideoCore, window: str, max_frames: int = 200):
-    """Проверка синхронного чтения кадров."""
-    _print_header("TEST: Sync reading")
+def test_sync_read(core: VideoCore, window: str, max_frames: int, label: str):
+    _print_header(f"{label} — Sync reading")
 
-    count = 0
-    while True:
-        frame = core.get_frame()
-        if frame is None:
-            print("End of video.")
-            break
+    with TM.timer(f"{label}_sync_read"):
+        count = 0
+        while True:
+            frame = core.get_frame()
+            if frame is None:
+                break
 
-        _show_frame(window, frame, delay_ms=1)
+            _show_frame(window, frame, delay_ms=1)
 
-        decoder_pos = core.get_decoder_frame_id()
-        # print(f"Decoder frame: {decoder_pos}")   # for debug
-
-        count += 1
-        if count >= max_frames:
-            print("Stopping test (limit reached).")
-            break
+            count += 1
+            if count >= max_frames:
+                break
 
 
-def test_async_read(core: VideoCore, window: str, max_frames: int = 200):
-    """Проверка асинхронного чтения кадров."""
-    _print_header("TEST: Async reading")
+def test_async_read(core: VideoCore, window: str, max_frames: int, label: str):
+    _print_header(f"{label} — Async reading")
 
     core.start_async()
-    count = 0
 
-    while True:
-        frame = core.get_last_async_frame()
-        if frame is None:
-            continue
+    with TM.timer(f"{label}_async_read"):
+        count = 0
+        while True:
+            frame = core.get_last_async_frame()
+            if frame is None:
+                continue
 
-        _show_frame(window, frame, delay_ms=1)
-        count += 1
+            _show_frame(window, frame, delay_ms=1)
+            count += 1
 
-        if count >= max_frames:
-            print("Stopping async test (limit reached).")
-            break
+            if count >= max_frames:
+                break
 
     core.stop_async()
 
 
-def test_seek_accuracy(core: VideoCore, window: str, frames_to_test: list[int]):
-    """Проверка точности seek()."""
-    _print_header("TEST: Seek accuracy")
+def test_seek_accuracy(core: VideoCore, window: str, frames_to_test: list[int], label: str):
+    _print_header(f"{label} — Seek accuracy")
 
     for idx in frames_to_test:
-        print(f"\nSeeking to frame: {idx}...")
 
-        ok = core.go_to_frame(idx)
+        with TM.timer(f"{label}_seek"):
+            ok = core.go_to_frame(idx)
+
         if not ok:
-            print(f"Seek FAILED for frame {idx}")
+            print(f"Seek failed for frame {idx}")
             continue
 
         frame = core.get_frame()
-        _show_frame(window, frame, delay_ms=300)
+        _show_frame(window, frame, delay_ms=200)
 
         decoder_pos = core.get_decoder_frame_id()
         _print_seek_info(idx, decoder_pos)
 
 
-def test_buffer(core: VideoCore, window: str, frames: int = 50):
-    """Проверка работы кольцевого буфера."""
-    if not core._buffer:
-        print("Buffer disabled, skipping test.")
-        return
+def test_buffer(core: VideoCore, window: str, frames: int, label: str):
+    _print_header(f"{label} — RingBuffer")
 
-    _print_header("TEST: RingBuffer")
-
-    for _ in range(frames):
-        frame = core.get_frame()
-        if frame is None:
-            break
-
-    print(f"Buffer size = {core._buffer.size}")
-    print("Last frame exists:", core.get_last_buffered() is not None)
+    with TM.timer(f"{label}_buffer"):
+        for _ in range(frames):
+            frame = core.get_frame()
+            if frame is None:
+                break
 
     last = core.get_last_buffered()
+    print("Last frame exists:", last is not None)
     if last is not None:
-        _show_frame(window, last, delay_ms=500)
+        _show_frame(window, last, delay_ms=400)
 
 
 # ============================================================
-#                    ОСНОВНОЙ ЗАПУСК ТЕСТОВ
+#                     ЗАПУСК ОДНОЙ КОНФИГУРАЦИИ
 # ============================================================
 
 def run_tests(
     path: str | Path,
-    decoder: DecoderType = DecoderType.HYBRID,
-    async_enabled: bool = False,
-    buffer_size: int = 0,
+    decoder: DecoderType,
+    async_enabled: bool,
+    buffer_size: int,
+    label: str
 ):
     window = "NeuroVideoCore — Debug Runner"
+
+    _print_header(f"RUNNING TESTS FOR {label}")
 
     config = VideoCoreConfig(
         decoder=decoder,
@@ -140,59 +133,74 @@ def run_tests(
     )
 
     core = VideoCore(path, config)
-
-    print("\nOpening decoder...")
     core.open()
 
-    # --- METADATA ---
-    print("\n--- METADATA ---")
     meta = core.get_metadata()
-    print(f"FPS:          {meta['fps']}")
-    print(f"Total frames: {meta['total_frames']}")
+    print(f"FPS: {meta['fps']} | Total frames: {meta['total_frames']}")
 
-    # ---------------------------------------------------------
-    # Выполнение тестов
-    # ---------------------------------------------------------
-
-    test_sync_read(core, window, max_frames=150)
+    # Тесты
+    test_sync_read(core, window, max_frames=150, label=label)
 
     if async_enabled:
-        test_async_read(core, window, max_frames=150)
+        test_async_read(core, window, max_frames=150, label=label)
 
-    test_seek_accuracy(core, window, frames_to_test=[0, 5, 10, 25, 100, 150])
+    test_seek_accuracy(core, window, frames_to_test=[0, 5, 10, 25, 100, 150], label=label)
 
     if buffer_size > 0:
-        test_buffer(core, window)
+        test_buffer(core, window, frames=50, label=label)
 
-    # ---------------------------------------------------------
-
-    print("\nAll tests completed.")
     core.close()
     cv2.destroyAllWindows()
 
 
 # ============================================================
-#                 ТЕСТОВЫЕ ВЫЗОВЫ ДЛЯ ЗАПУСКА
+#                        ТОЧКА ВХОДА
 # ============================================================
 
 if __name__ == "__main__":
 
     PATH = r"w:\MATLLER\cherkiz\REVISION_9\ml_cam101_05112025_1400.avi"
 
-    # 1) Hybrid + sync
-    run_tests(PATH, decoder=DecoderType.HYBRID, async_enabled=False, buffer_size=0)
+    # ---------------------------------------------------------
+    # СПИСОК КОНФИГУРАЦИЙ ДЛЯ АВТОМАТИЧЕСКОГО ЗАПУСКА
+    # ---------------------------------------------------------
 
-    # 2) Hybrid + buffer
-    # run_tests(PATH, decoder=DecoderType.HYBRID, async_enabled=False, buffer_size=50)
+    CONFIGS = [
+        # Hybrid
+        {"decoder": DecoderType.HYBRID, "async_enabled": False, "buffer_size": 0,  "label": "Hybrid_sync"},
+        {"decoder": DecoderType.HYBRID, "async_enabled": False, "buffer_size": 50, "label": "Hybrid_buffer"},
+        {"decoder": DecoderType.HYBRID, "async_enabled": True,  "buffer_size": 0,  "label": "Hybrid_async"},
+        {"decoder": DecoderType.HYBRID, "async_enabled": True, "buffer_size": 50, "label": "Hybrid_async_buffer"},
 
-    # 3) Hybrid + async
-    # run_tests(PATH, decoder=DecoderType.HYBRID, async_enabled=True, buffer_size=0)
+        # OpenCV
+        {"decoder": DecoderType.OPENCV, "async_enabled": False, "buffer_size": 0,  "label": "OpenCV_sync"},
+        {"decoder": DecoderType.OPENCV, "async_enabled": False, "buffer_size": 50, "label": "OpenCV_buffer"},
+        {"decoder": DecoderType.OPENCV, "async_enabled": True, "buffer_size": 0, "label": "OpenCV_async"},
+        {"decoder": DecoderType.OPENCV, "async_enabled": True, "buffer_size": 50, "label": "OpenCV_async_buffer"},
 
-    # 4) Hybrid + async + buffer
-    # run_tests(PATH, decoder=DecoderType.HYBRID, async_enabled=True, buffer_size=50)
+        # PyAV
+        {"decoder": DecoderType.PYAV, "async_enabled": False, "buffer_size": 0,  "label": "PyAV_sync"},
+        {"decoder": DecoderType.PYAV, "async_enabled": False, "buffer_size": 50, "label": "PyAV_buffer"},
+        {"decoder": DecoderType.PYAV, "async_enabled": True, "buffer_size": 0, "label": "PyAV_async"},
+        {"decoder": DecoderType.PYAV, "async_enabled": True, "buffer_size": 50, "label": "PyAV_async_buffer"},
+    ]
 
-    # 5) OpenCV-only
-    # run_tests(PATH, decoder=DecoderType.OPENCV)
+    # ---------------------------------------------------------
+    # Запуск всех тестов подряд
+    # ---------------------------------------------------------
 
-    # 6) PyAV-only
-    # run_tests(PATH, decoder=DecoderType.PYAV)
+    for cfg in CONFIGS:
+        run_tests(
+            PATH,
+            decoder=cfg["decoder"],
+            async_enabled=cfg["async_enabled"],
+            buffer_size=cfg["buffer_size"],
+            label=cfg["label"]
+        )
+
+    # ---------------------------------------------------------
+    # Финальная таблица сравнения
+    # ---------------------------------------------------------
+
+    TM.print_summary(sort_by="total")
+
